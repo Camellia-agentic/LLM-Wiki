@@ -1,0 +1,217 @@
+{
+  "main": {
+    "id": "23cfcd9e6ef08a13",
+    "type": "split",
+    "children": [
+      {
+        "id": "b5639e4e01c50711",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "2b68d468f1d90f90",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "raw/sources/dspark-99b8b08bc7.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "dspark-99b8b08bc7"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "28077f113804b395",
+    "type": "split",
+    "children": [
+      {
+        "id": "aec771be7be82efa",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "2db89b10f9f8b080",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "文件列表"
+            }
+          },
+          {
+            "id": "38788d4a3afa439d",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "搜索"
+            }
+          },
+          {
+            "id": "c8599d416cfd7d6a",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "书签"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "2915334711a9bc36",
+    "type": "split",
+    "children": [
+      {
+        "id": "c7e70555b6e965c1",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "488b5d604d275d4f",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "AGENTS.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "AGENTS 的反向链接列表"
+            }
+          },
+          {
+            "id": "a7c0c8d156492095",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "AGENTS.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "AGENTS 的出链列表"
+            }
+          },
+          {
+            "id": "325b68ea56090d2f",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "标签"
+            }
+          },
+          {
+            "id": "1c51cd61bd002167",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "添加笔记属性"
+            }
+          },
+          {
+            "id": "36b43a6b8453e5ca",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "AGENTS.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "AGENTS 的大纲"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:打开快速切换": false,
+      "graph:查看关系图谱": false,
+      "canvas:新建白板": false,
+      "daily-notes:打开/创建今天的日记": false,
+      "templates:插入模板": false,
+      "command-palette:打开命令面板": false,
+      "bases:新建数据库": false
+    }
+  },
+  "active": "2b68d468f1d90f90",
+  "lastOpenFiles": [
+    "wiki/sources/深度复盘报告dspark--置信度调度的半自回归高并发投机解码系统-388c00de77.md",
+    "wiki/index.md",
+    "raw/sources/dspark-99b8b08bc7.md",
+    "raw/sources/cockroach部署流程-af5626b479.md",
+    "wiki/sources/cockroachdb-v19111-docker-部署流程-bf66389a43.md",
+    "wiki/entities/cockroachsh.md",
+    "wiki/entities/cockroachdb-v19111.md",
+    "wiki/entities/admin-ui.md",
+    "wiki/concepts/非安全模式---insecure.md",
+    "wiki/concepts/命名卷权限.md",
+    "wiki/concepts/docker-部署.md",
+    "wiki/concepts/cockroachdb.md",
+    "raw/inbox/Cockroach部署流程.md",
+    "raw/inbox/AGENTS.md",
+    "docs/CONTEXT.md",
+    "docs/TESTING.md",
+    "wiki/log.md",
+    "wiki/overview.md",
+    "wiki/reviews.md",
+    "AGENTS.md",
+    "wiki/synthesis/云原生基础设施.md",
+    "wiki/sources/项目级-codex-约束-1030211684.md",
+    "raw/sources/agents-68282cd50d.md",
+    "docs/ROADMAP.md",
+    "docs/suggested-improvements-from-cowiki.md",
+    "docs",
+    "README.md",
+    "未命名"
+  ]
+}

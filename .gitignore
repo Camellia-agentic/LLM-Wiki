@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.llm-wiki/state.json
+.llm-wiki/*.jsonl
+.llm-wiki/analyses/
+.llm-wiki/drafts/
+.llm-wiki/queue.json
+.llm-wiki/reviews.json
+.llm-wiki/search.db*
+.llm-wiki/watcher*.log
