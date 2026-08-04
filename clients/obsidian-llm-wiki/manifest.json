@@ -1,0 +1,10 @@
+{
+  "id": "llm-wiki",
+  "name": "LLM Wiki",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "薄客户端：连接本机 LLM Wiki 服务，提交采集、查看待办、打开 Web 控制中心。",
+  "author": "LLM Wiki",
+  "isDesktopOnly": true,
+  "css": "styles.css"
+}

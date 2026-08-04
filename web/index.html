@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="llm-wiki-token" content="__TOKEN__">
+  <title>LLM Wiki 控制中心</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-mark">LW</div>
+      <div>
+        <h1>LLM Wiki</h1>
+        <small>本地知识管线控制台</small>
+      </div>
+    </div>
+    <nav class="main-nav">
+      <button type="button" data-workspace="collect" class="active">收集</button>
+      <button type="button" data-workspace="pending">待处理</button>
+      <button type="button" data-workspace="knowledge">知识</button>
+      <button type="button" data-workspace="more">更多</button>
+    </nav>
+    <div class="header-status">
+      <div id="model-pill" class="model-pill" title="模型连接状态">
+        <span class="dot"></span>
+        <span id="model-pill-text">检测模型…</span>
+      </div>
+      <span id="notice" class="notice">本机服务</span>
+    </div>
+  </header>
+
+  <div class="app-body">
+    <main id="main">
+      <!-- 收集 -->
+      <section id="ws-collect" class="workspace active">
+        <div class="metrics" id="collect-metrics"></div>
+        <div class="collect-inputs">
+          <article class="panel">
+            <div class="panel-icon">📄</div>
+            <h2>文件上传</h2>
+            <div id="drop-zone" class="drop-zone">
+              <input id="file-input" type="file" accept=".md,.markdown,.txt" multiple hidden>
+              <p>拖放 Markdown / TXT 到此处，或</p>
+              <button type="button" id="choose-file" class="btn primary">选择文件</button>
+            </div>
+          </article>
+          <article class="panel">
+            <div class="panel-icon">🔗</div>
+            <h2>URL 采集</h2>
+            <form id="url-form" class="inline-form">
+              <input id="url-input" type="url" placeholder="https://example.com/article" required>
+              <button type="submit" class="btn primary">提交</button>
+            </form>
+          </article>
+          <article class="panel">
+            <div class="panel-icon">📋</div>
+            <h2>粘贴正文</h2>
+            <form id="paste-form" class="stack-form">
+              <input id="paste-title" type="text" placeholder="标题" required>
+              <input id="paste-url" type="url" placeholder="来源 URL（可选）">
+              <textarea id="paste-body" rows="5" placeholder="正文内容" required></textarea>
+              <button type="submit" class="btn primary">提交</button>
+            </form>
+          </article>
+        </div>
+        <section class="panel">
+          <h2 class="section-title">来源与任务时间线</h2>
+          <div id="timeline" class="list"></div>
+        </section>
+      </section>
+
+      <!-- 待处理 -->
+      <section id="ws-pending" class="workspace">
+        <div class="toolbar">
+          <div class="filter-bar" id="pending-filters">
+            <button type="button" data-filter="all" class="active">全部</button>
+            <button type="button" data-filter="drafts">草稿</button>
+            <button type="button" data-filter="facts">事实核验</button>
+            <button type="button" data-filter="research">待补充</button>
+            <button type="button" data-filter="failed">失败任务</button>
+          </div>
+        </div>
+        <div id="pending-list" class="list"></div>
+      </section>
+
+      <!-- 知识 -->
+      <section id="ws-knowledge" class="workspace">
+        <div class="knowledge-layout">
+          <div class="knowledge-main">
+            <div class="search-bar">
+              <input id="search-input" type="search" placeholder="搜索知识库">
+              <button type="button" id="search-btn" class="btn">检索</button>
+              <button type="button" id="ask-btn" class="btn primary">问答</button>
+            </div>
+            <div class="view-tabs">
+              <button type="button" data-kview="list" class="active">列表</button>
+              <button type="button" data-kview="read">阅读</button>
+              <button type="button" data-kview="graph">图谱</button>
+            </div>
+            <div id="search-results" class="list kview-panel active" data-kview="list"></div>
+            <article id="page-preview" class="panel kview-panel" data-kview="read" hidden>
+              <div class="page-toolbar">
+                <h2 id="page-title"></h2>
+                <div class="page-actions">
+                  <button type="button" id="edit-obsidian" class="btn">在 Obsidian 编辑</button>
+                  <button type="button" id="show-graph" class="btn">局部图谱</button>
+                </div>
+              </div>
+              <div id="page-content" class="markdown-body"></div>
+              <footer id="page-meta" class="page-meta"></footer>
+            </article>
+            <div id="graph-container" class="panel kview-panel graph-panel" data-kview="graph" hidden>
+              <canvas id="graph-canvas"></canvas>
+            </div>
+            <pre id="ask-output" class="output" hidden></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- 更多 -->
+      <section id="ws-more" class="workspace">
+        <div class="metrics" id="health-metrics"></div>
+        <article class="panel">
+          <h2>模型配置</h2>
+          <div id="config-status" class="config-help"></div>
+          <p class="config-help" style="margin-top:14px">
+            在 Vault 根目录复制 <code>config.toml.example</code> 为 <code>config.toml</code>，设置 <code>active</code> 配置档，
+            并将 API Key 写入对应环境变量（如 <code>DEEPSEEK_API_KEY</code>）。修改后需<strong>重启</strong> <code>serve</code>。
+          </p>
+          <pre class="config-help">copy config.toml.example config.toml
+$env:DEEPSEEK_API_KEY = "sk-..."
+python tools/wiki.py serve</pre>
+        </article>
+        <article class="panel">
+          <h2>资料管理</h2>
+          <form class="inline-form" method="post" action="/action/trash">
+            <input type="hidden" name="token" value="__TOKEN__">
+            <select name="target">__SOURCES__</select>
+            <button type="submit" class="btn danger">移入回收站</button>
+          </form>
+        </article>
+        <article class="panel">
+          <h2>回收站</h2>
+          <div id="trash-list" class="list"></div>
+        </article>
+        <article class="panel">
+          <h2>问答</h2>
+          <div class="inline-form">
+            <input id="more-ask-input" type="text" placeholder="基于已沉淀页面提问">
+            <button type="button" id="more-ask-btn" class="btn primary">提问</button>
+          </div>
+          <pre id="more-ask-output" class="output"></pre>
+        </article>
+      </section>
+    </main>
+
+    <aside id="inspector" class="inspector" hidden>
+      <header class="inspector-header">
+        <h3 id="inspector-title">详情</h3>
+        <button type="button" id="inspector-close" class="btn">关闭</button>
+      </header>
+      <div id="inspector-body" class="inspector-body"></div>
+    </aside>
+  </div>
+
+  <dialog id="diff-dialog">
+    <header class="dialog-header">
+      <h3 id="diff-title">草稿差异</h3>
+      <button type="button" id="diff-close" class="btn">关闭</button>
+    </header>
+    <pre id="diff-content" class="diff-content"></pre>
+  </dialog>
+
+  <dialog id="review-dialog">
+    <header class="dialog-header">
+      <h3 id="review-title">核实资料</h3>
+      <button type="button" id="review-close" class="btn">关闭</button>
+    </header>
+    <div class="review-body">
+      <div id="review-question" class="output"></div>
+      <div id="review-anchor" class="output" hidden></div>
+      <div class="toolbar">
+        <a id="open-evidence" class="btn" target="_blank" rel="noopener">在 Obsidian 打开原始资料</a>
+        <a id="open-wiki-page" class="btn" target="_blank" rel="noopener">在 Obsidian 打开 Wiki 页</a>
+      </div>
+      <div class="split">
+        <section>
+          <h4>原始资料</h4>
+          <pre id="review-evidence" class="output"></pre>
+        </section>
+        <section>
+          <h4>当前 Wiki 页面</h4>
+          <pre id="review-wiki-page" class="output"></pre>
+        </section>
+      </div>
+      <textarea id="review-note" rows="4" placeholder="核实依据、结论或后续动作"></textarea>
+      <div class="toolbar">
+        <button type="button" id="resolve-review" class="btn primary">保存并标记已处理</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="/static/graph.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

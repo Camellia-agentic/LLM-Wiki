@@ -1,246 +1,258 @@
 # Local LLM Wiki
 
-一个按 Karpathy LLM Wiki 模式搭建的本地、Markdown 优先知识库：
+一个本地、Markdown 优先、由 LLM 协助维护的可追溯知识库。
+
+远程仓库：[github.com/Camellia-agentic/LLM-Wiki](https://github.com/Camellia-agentic/LLM-Wiki)
 
 ```text
-raw/inbox/ (Obsidian 中可编辑的收件箱)
-        -> 持久任务队列
-raw/sources/ (按 SHA-256 归档的不可修改原始资料)
-        -> 第一阶段：证据/风险分析快照
-        -> 第二阶段：候选 Wiki 草稿 + Diff
-        -> 人工应用后才更新 Wiki 页面
-wiki/ (可在 Obsidian 中浏览的结构化知识)
-        -> hybrid search / ask / 事实审核 / 回收站 / lint
+raw/inbox/  用户可编辑的收件箱
+    -> 持久任务队列
+raw/sources/  SHA-256 不可变原始资料
+    -> 第一阶段：证据、概念、实体、冲突与风险分析（长文分块）
+    -> 第二阶段：候选 Wiki 页面
+.llm-wiki/drafts/  草稿、Diff、基线与回滚
+    -> 人工应用
+wiki/  Obsidian 可浏览和编辑的结构化知识
 ```
 
-它不是“每次问答都从原文拼接”的传统 RAG。每次导入会生成一份资料摘要，并可通过本地 LLM 逐步维护概念、实体、交叉引用、冲突与待复核项。`index.md` 和 `log.md` 分别承担内容导航和可追溯的时间线。
+它不是每次问答都临时拼接原文的传统 RAG。资料先沉淀为带来源的 Wiki 页面，再参与搜索、问答、综合分析和双链导航；模型不能绕过草稿闸门静默修改 Wiki。
+
+## 当前能力
+
+- 导入本地 `.md`、`.markdown` 和 `.txt`；**公开 URL** 与**粘贴正文**采集（Web 或 API）。
+- 监听 `raw/inbox/`，稳定保存后自动入队、归档和处理。
+- **长文分块分析**（不再静默截断前 14,000 字符）。
+- 按 SHA-256 / 正文 digest 创建不可变来源版本；同 URL 正文不变时不重复快照。
+- 两阶段模型分析，分析快照与页面草稿分离。
+- 草稿 Diff、人工应用/丢弃、基线冲突检测、**草稿图谱差异预览**（graph-delta）。
+- 未知 frontmatter 与 `## 人工补充` 保留。
+- 事实核验与待补充分开，事实项必须有可定位的逐字原文引句。
+- SQLite FTS5 + 中文 BM25 的 RRF 融合搜索。
+- 基于 Wiki 页面、带页面引用约束的模型问答。
+- 回收站、显式别名/合并、健康检查和本机控制中心（**收集 / 待处理 / 知识** 三工作区）。
+- **语义关系**（frontmatter `relations:` + `## 关系`）与导航/语义图谱 API。
+- Obsidian 双链、反向链接；可选 **Obsidian 薄插件**（`clients/obsidian-llm-wiki/`）。
+- 薄 **MCP** 只读工具（`python tools/wiki.py mcp`）。
+- **`config.toml`** 持久化模型端点（DeepSeek / OpenAI / Ollama 等 OpenAI 兼容服务）。
+
+目标设计与未实现边界见 [采集、交互与知识图谱设计](docs/INTERACTION_AND_GRAPH_DESIGN.md)、[技术说明](docs/TECHNICAL.md)、[全流程验收](docs/ACCEPTANCE.md)、[路线图](docs/ROADMAP.md)。
 
 ## 前置条件
 
-- Windows 已安装 Python 3.10+（当前工作区已有 Python 3.12）。
-- 可选：本地 OpenAI 兼容模型服务。Ollama、LM Studio、vLLM 均可。
-- 可选：Obsidian。直接把本目录作为 vault 打开即可。
+- Windows 与 Python 3.10+。
+- 可选：DeepSeek、OpenAI、Ollama、LM Studio、vLLM 或其他 OpenAI 兼容模型服务。
+- 可选：Obsidian。将仓库根目录作为 Vault 打开，不要只打开 `wiki/`。
 
-不需要数据库、Docker、向量库或额外 Python 依赖。
+核心命令只依赖 Python 标准库和 SQLite。未配置模型时仍可完成归档、确定性资料摘要、搜索和健康检查。
 
-## 在 Obsidian 中打开
+## 快速开始
 
-1. 启动 Obsidian，选择 **打开本地文件夹作为库（Open folder as vault）**。
-2. 选择 `D:\Cusor_workspace\local-llm-wiki`，不要选择其中的 `wiki` 子目录。
-3. 在文件列表中打开 `wiki/index.md` 作为入口；`[[wiki/...]]` 双链、反向链接和图谱视图会直接生效。
+```powershell
+# 克隆后进入仓库
+git clone git@github.com:Camellia-agentic/LLM-Wiki.git
+cd LLM-Wiki
 
-建议在图谱视图的过滤条件中填入 `-path:raw`，隐藏收件箱和原始资料，仅查看 LLM 维护的 Wiki 页面。Obsidian 负责写作、浏览和人工补充；导入状态、草稿 Diff、问答与审核由本机控制中心负责。
+# 复制并编辑模型配置
+copy config.toml.example config.toml
+
+# 设置 API Key（DeepSeek 示例；密钥不要写入 config.toml）
+$env:DEEPSEEK_API_KEY = "sk-..."
+
+# 启动控制中心
+python tools/wiki.py serve
+```
+
+浏览器打开 `http://127.0.0.1:8765/`。完整可复制验收步骤见 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)。
 
 ## 本机控制中心
 
-在设置模型环境变量的 PowerShell 窗口启动一次：
+`config.toml` 支持 `deepseek`、`openai`、`ollama` 等配置档；`api_key_env` 填写**环境变量名**（如 `DEEPSEEK_API_KEY`），不是密钥本身。详见 [config.toml.example](config.toml.example)。
 
-```powershell
-python tools/wiki.py serve `
-  --llm-url "http://aiproxy.smoa.cc/smartmore/v1/chat/completions" `
-  --model "DeepSeek-V4-Pro"
-```
+控制中心提供**收集**（文件 / URL / 粘贴）、**待处理**（草稿、核验、失败任务）、**知识**（搜索、预览、局部图）工作区。服务只绑定 `127.0.0.1` / `localhost`。
 
-浏览器会打开 `http://127.0.0.1:8765/`。日常整理只需在该页面拖入资料、查看处理状态、审阅草稿 Diff、应用或丢弃变更、检索问答、处理事实核验或待补充事项、恢复资料；无需为这些操作重复输入终端命令。
+模型密钥从 `config.toml` 的 `api_key_env` 或启动时的 `LLM_WIKI_API_KEY` / `--api-key` 读取。不要把密钥写入 Git、日志或截图。
 
-服务默认监听 `raw/inbox/`，且模型生成内容默认进入草稿，不会静默改写 `wiki/`。`--auto-accept` 会恢复无人值守的直接应用模式，仅适合你已接受该风险的场景。服务只绑定 `127.0.0.1`，不会向局域网公开；API Key 仍只从启动进程的环境变量读取。
+`serve` 和 `watch` 只在启动时读取代码、`config.toml` 和环境变量。更新工具或密钥后需停止旧进程并重新启动。
 
-## 自动导入 Obsidian 笔记
+### 常见模型错误
 
-在 Obsidian 的 `raw/inbox/` 中新建笔记或拖入 `.md` / `.txt` 文件。然后在本目录启动一次后台监听：
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| HTTP 401 | 环境变量未设置，或把 `sk-...` 误写入 `api_key_env` | 在同一终端设置 `$env:DEEPSEEK_API_KEY`，`api_key_env` 保持为变量名 |
+| HTTP 503 | 上游服务繁忙（如 DeepSeek `Service is too busy`） | 稍后重试、切换 `active` 配置档，或改用 Ollama 本地模型 |
+| JSON 解析失败 | 模型返回不完整 JSON | 多为服务不稳定；API 恢复后 `refine` 重试 |
+
+工具对 503 / 429 / 502 会自动退避重试。详见 [ACCEPTANCE.md 附录 A](docs/ACCEPTANCE.md#附录-a-常见-llm-错误排查)。
+
+## Obsidian
+
+1. 在 Obsidian 中选择「打开本地文件夹作为库」。
+2. 选择本仓库根目录。
+3. 从 `wiki/index.md` 开始阅读。
+
+`[[wiki/...]]` 双链、反向链接和图谱会直接生效。建议在 Obsidian 图谱中使用 `-path:raw` 隐藏收件箱和原始资料。
+
+Obsidian 负责深度阅读、编辑和人工补充；控制中心负责采集、草稿、问答与审核。
+
+**Obsidian 薄插件**（可选）：见 [clients/obsidian-llm-wiki/README.md](clients/obsidian-llm-wiki/README.md)。需 `npm install && npm run build` 后手工安装。
+
+`serve` 默认已包含 inbox 监听，不要对同一 Vault 同时再运行 `watch`。
+
+## 导入资料
+
+### 控制中心采集
+
+启动 `serve` 后，在**收集**工作区可：
+
+- 拖入或选择 Markdown/TXT 文件
+- 提交公开 URL（后台抓取）
+- 粘贴标题与正文
+
+### 监听 Obsidian 收件箱
 
 ```powershell
 python tools/wiki.py watch
 ```
 
-监听器每 2 秒扫描一次，文件连续 4 秒未变动后进入 `.llm-wiki/queue.json`。任务会持久化状态、错误和尝试次数；中断后的 `processing` 任务会在下次启动时恢复为待处理，模型失败最多自动重试 3 次。配置模型时，资料会立即归档、分析快照会保存，而候选页面会进入草稿等待应用。修改同一收件箱文件会形成新的 SHA-256 归档版本，不覆盖已有来源。
-
-`watch` 是启动时加载代码和环境变量的常驻进程。更新 `tools/wiki.py`、修改模型地址或更换 API Key 后，先按 `Ctrl+C` 停止旧监听器，再在设置好当前 PowerShell 会话环境变量的终端中重新启动；旧进程不会自动获得新功能或新密钥。
-
-只想扫描现有收件箱一次时：
+默认每 2 秒扫描一次，文件连续 4 秒未变化后入队。`serve` 默认已启动同一 watcher；只需 Web/API 时用 `serve --no-watch`。
 
 ```powershell
 python tools/wiki.py watch --once
 ```
 
-## 快速开始
-
-在本目录执行：
+### 命令行导入
 
 ```powershell
-# 1. 导入单个 Markdown 或 TXT 文件。原文件被复制到 raw/sources，之后不再被修改。
-python tools/wiki.py ingest "..\\AAA文档汇总\\LLM_Wiki.md"
-
-# 2. 递归导入一个目录中的 Markdown/TXT 文件。
-python tools/wiki.py ingest "..\\AAA文档汇总" --recursive
-
-# 3. 在 Wiki 页中检索（SQLite FTS5 + 中文 BM25 RRF 融合）。
-python tools/wiki.py search "知识库如何持续维护"
-
-# 4. 检查断链、孤儿页面与缺失来源。
-python tools/wiki.py lint
+python tools/wiki.py ingest "path\to\note.md"
+python tools/wiki.py ingest "path\to\notes" --recursive
 ```
 
-不带模型参数时，`ingest` 会创建确定性的资料摘要、索引和日志，适合先完成资料归档与检索。
+不带模型时，导入立即创建确定性资料摘要。带模型时，默认创建草稿；只有 `--apply` 或 `draft accept` 才写入 Wiki。
 
-## 命令速查
-
-所有命令都在知识库根目录运行。需要模型的命令共用 `--llm-url`、`--model`、`--api-key`（默认读取环境变量 `LLM_WIKI_API_KEY`）和 `--timeout`；`--max-tokens` 仅控制模型输出长度。
+## 常用命令
 
 | 命令 | 用途 |
 | --- | --- |
-| `ingest <文件或目录> [--recursive] [--apply]` | 导入 Markdown/TXT；带模型时默认生成草稿，`--apply` 才直接写入。 |
-| `search <查询> [--top-k N] [--rebuild-index]` | 用 FTS5 与中文 BM25 的 RRF 融合检索 Wiki；`--rebuild-index` 先重建索引。 |
-| `ask <问题> --llm-url <地址> --model <模型> [--top-k N] [--save]` | 基于检索到的 Wiki 页面问答；`--save` 写入 `wiki/queries/`。 |
-| `watch [--path <目录>] [--interval 秒] [--settle-seconds 秒] [--once] [--auto-accept]` | 监听收件箱；带模型时默认生成草稿。 |
-| `refine [raw/sources/文件.md] --llm-url <地址> --model <模型> [--apply]` | 对全部或指定已归档资料重新提炼为草稿。 |
-| `synthesize [主题] --llm-url <地址> --model <模型> [--top-k N] [--apply]` | 生成跨资料综合草稿；省略主题时综合全部资料摘要。 |
-| `remove <raw/sources 路径或 wiki/sources 页面> --yes` | 级联删除一份资料及其独占派生页；共享概念和实体会保留。 |
-| `review list [--status open\|resolved\|all] [--queue facts\|research\|all]`、`review resolve <ID>`、`review reopen <ID>` | 查看、处理或重新打开审核项；`facts` 仅显示带原文引句的事实，`research` 显示待补充。 |
-| `queue status`、`queue retry <ID>`、`queue process [--max-attempts N]` | 查看、重置或手工处理持久导入队列；`process` 可带模型参数。 |
-| `draft list`、`draft show <ID>`、`draft accept <ID>`、`draft discard <ID>` | 查看 Diff、应用或丢弃模型草稿。 |
-| `trash list`、`trash move <资料>`、`trash restore <digest>` | 隐藏资料并可恢复；永久删除仍使用 `remove --yes`。 |
-| `topic alias <类型> <页面> <别名>`、`topic merge <类型> <来源> <目标>` | 为疑似重复概念显式添加别名或合并；不会自动合并。 |
-| `status [--json]`、`rebuild`、`serve` | 查看状态、重建派生索引或启动本机控制中心。 |
-| `lint` | 检查断链、孤儿页与缺失来源。 |
+| `ingest <文件或目录> [--recursive] [--apply]` | 导入 Markdown/TXT；带模型时默认生成草稿 |
+| `watch [--once] [--auto-accept]` | 无头监听收件箱 |
+| `refine [raw/sources/文件] [--apply]` | 对已归档资料重新提炼 |
+| `synthesize [主题] [--apply]` | 生成跨资料综合页面草稿 |
+| `search <查询> [--top-k N] [--rebuild-index]` | 混合检索 Wiki |
+| `ask <问题> [--top-k N] [--save]` | 基于检索页面问答 |
+| `queue status/process/retry` | 查看、处理或重置持久任务 |
+| `draft list/show/accept/discard` | 查看 Diff、应用或丢弃草稿 |
+| `review list/resolve/reopen` | 处理事实核验和待补充 |
+| `trash list/move/restore` | 隐藏或恢复资料 |
+| `remove <资料> --yes` | 永久级联删除 |
+| `topic alias/merge` | 显式别名或合并重复主题 |
+| `status [--json]` | 收件箱、队列、草稿、审核和健康状态 |
+| `rebuild` | 重建导航、概览和搜索索引 |
+| `lint` | 检查断链、孤儿页和缺失来源 |
+| `serve` | 启动本机控制中心和收件箱监听 |
+| `mcp [--http]` | 薄 MCP（只读转发 loopback API） |
 
-可运行 `python tools/wiki.py <命令> --help` 查看某个子命令的完整参数。
+使用 `python tools/wiki.py <命令> --help` 查看完整参数。
 
-## 质量闭环
+## 模型配置
 
-配置模型后，每份资料先生成证据、概念、实体、风险的分析快照，再基于快照生成候选页面。分析快照存放在 `.llm-wiki/analyses/`，草稿存放在 `.llm-wiki/drafts/`；应用前会比较页面基线，发现人工修改则拒绝覆盖。
+**推荐：使用 `config.toml`**
 
-```powershell
-# 查看或重试监听器中的失败任务
-python tools/wiki.py queue status
-python tools/wiki.py queue retry <任务ID>
-python tools/wiki.py queue process --llm-url <endpoint> --model <model>
-
-# 审阅文件变更草稿
-python tools/wiki.py draft list
-python tools/wiki.py draft show <草稿ID>
-python tools/wiki.py draft accept <草稿ID>
-
-# 只查看有原文证据的待核实事实
-python tools/wiki.py review list --queue facts
-
-# 查看待补充、待外部查证和旧版无引句记录
-python tools/wiki.py review list --queue research
-python tools/wiki.py review resolve <审核ID>
-
-# 生成跨资料专题；不传主题时综合全部资料摘要
-python tools/wiki.py synthesize "云原生基础设施" --llm-url <endpoint> --model <model>
-
-# 删除一份归档资料及其摘要、独占概念/实体、审核项与死链
-python tools/wiki.py remove raw/sources/文件名.md --yes
+```toml
+[llm]
+active = "deepseek"   # 或 openai | ollama
 ```
 
-`ask` 只使用检索到的 Wiki 页面生成回答，要求模型引用 `[wiki/路径]`；引用缺失或越界时会自动重试一次，并在仍失败时附上依据页面。
+```powershell
+$env:DEEPSEEK_API_KEY = "sk-..."
+python tools/wiki.py serve
+```
 
-事实核验和待补充是两条不同的队列。只有模型提供逐字原文引句、且工具能在归档资料中找到该引句的 `source_claim` 才会出现在“事实审核”；详情会显示工具计算的行号、原文引句、原始资料和对应 Wiki 页面，并可跳转到 Obsidian。缺漏建议、外部查证问题和旧版未保存引句的项目会进入“待补充”，不会被伪装成原文事实。处理任何项目时都应填写依据、结论或后续动作；记录会保留在队列中。草稿审批只决定是否应用文件变更，不替代事实核验。
-
-## 连接本地模型
-
-以 Ollama 为例，先启动兼容接口并下载任意中文/通用模型：
+**临时覆盖（Ollama 示例）：**
 
 ```powershell
 ollama serve
 ollama pull qwen3:8b
-```
 
-导入时加上模型配置，工具会先做结构化分析，再基于分析生成资料摘要、概念页、实体页和待复核项的草稿：
-
-```powershell
-python tools/wiki.py ingest "..\\AAA文档汇总\\LLM_Wiki.md" `
+python tools/wiki.py refine `
   --llm-url "http://127.0.0.1:11434/v1/chat/completions" `
   --model "qwen3:8b"
 ```
 
-问答会检索 Wiki 页面，而不是把全部原始资料送入模型。添加 `--save` 可把有价值的回答回写到 `wiki/queries/`，让探索结果继续积累：
+安全输入 API Key：
 
 ```powershell
-python tools/wiki.py ask "这个知识库和传统 RAG 有何区别？" `
-  --llm-url "http://127.0.0.1:11434/v1/chat/completions" `
-  --model "qwen3:8b" --save
-```
-
-如服务要求鉴权，增加 `--api-key`。LM Studio 常用地址为 `http://127.0.0.1:1234/v1/chat/completions`；vLLM 则通常是 `http://127.0.0.1:8000/v1/chat/completions`。
-
-### AI Proxy / vLLM
-
-对于 OpenAI 兼容的 AI Proxy，建议把密钥只放入当前 PowerShell 会话的环境变量，不要写入笔记或命令参数：
-
-```powershell
-$secret = [System.Net.NetworkCredential]::new("", (Read-Host -AsSecureString "AI Proxy API Key")).Password
+$secret = [System.Net.NetworkCredential]::new("", (Read-Host -AsSecureString "LLM API Key")).Password
 $env:LLM_WIKI_API_KEY = $secret
 Remove-Variable secret
-
-python tools/wiki.py watch `
-  --llm-url "http://aiproxy.smoa.cc/smartmore/v1/chat/completions" `
-  --model "DeepSeek-V4-Pro"
 ```
 
-停止监听器或关闭该 PowerShell 后，使用 `Remove-Item Env:LLM_WIKI_API_KEY` 清除当前会话的密钥。工具会优先请求结构化 JSON；若代理不支持该参数，会自动以普通 JSON 提示重试。
-
-#### `HTTP Error 403: Forbidden` 排查
-
-403 表示请求已到达代理，但当前身份或模型权限被拒绝，通常不是 Wiki 文件或监听器稳定时间的问题。请在**启动命令的同一个 PowerShell 窗口**依次确认：
-
-1. `LLM_WIKI_API_KEY` 已设置且不是空值；新开终端、重启监听器后需要重新设置。
-2. `--llm-url` 是代理提供的完整 `.../v1/chat/completions` 地址，`--model` 与该 Key 被授权的模型名完全一致。
-3. 在代理控制台确认该 Key 未过期、具备模型调用权限并未触发账户、IP 或配额限制。
-
-不要把 Key 粘贴到笔记、README、命令历史截图或错误报告中。若以上信息正确仍返回 403，需要由代理服务侧检查该请求的权限策略。
-
-### 重新提炼已归档资料
-
-此前在无模型模式导入的资料不会被监听器重复处理。模型配置完成后，用下面命令对全部 `raw/sources/` 资料补做结构化提炼；原始资料不会被复制或修改：
+## 质量闭环
 
 ```powershell
-python tools/wiki.py refine `
-  --llm-url "http://aiproxy.smoa.cc/smartmore/v1/chat/completions" `
-  --model "DeepSeek-V4-Pro"
+python tools/wiki.py queue status
+python tools/wiki.py draft list
+python tools/wiki.py review list --queue facts
+python tools/wiki.py lint
+python -B -m unittest discover -s tests -v
 ```
 
-可将最后一行替换为单个 `raw/sources/文件名.md`，只提炼一份资料。
+草稿审批、事实核验和待补充是三种不同操作；详见 [docs/CONTEXT.md](docs/CONTEXT.md)。
+
+## Git 与提交
+
+`.gitignore` 已排除不应入库的内容：
+
+| 路径 | 原因 |
+| --- | --- |
+| `config.toml` | 可能含本地配置；用 `config.toml.example` 作模板 |
+| `.llm-wiki/*` | 队列、草稿、索引等运行时状态 |
+| `raw/inbox/*` | 待导入临时笔记（归档后进入 `raw/sources/`） |
+| `.obsidian/workspace*.json` | Obsidian 个人窗口布局 |
+| `clients/obsidian-llm-wiki/node_modules/` | 插件依赖 |
+
+**应提交：** `wiki/`、`raw/sources/`（你的知识沉淀）、`llm_wiki/`、`web/`、`tools/`、`tests/`、`docs/`、`config.toml.example`。
+
+若 Cursor 显示「非 Git 仓库」，可能是目录所有权问题，执行：
+
+```powershell
+git config --global --add safe.directory D:/Cusor_workspace/LLM-Wiki
+```
+
+## 当前限制
+
+- `entitie` 等历史页面需通过可审阅草稿或迁移命令批量修正。
+- Obsidian 插件需本地 `npm run build`；CI 尚未自动构建插件产物。
+- 公开 URL 抓取受目标站点 robots / 反爬限制；部分页面需手工保存为 Markdown。
+- DeepSeek 等服务在高峰期可能返回 503，需重试或切换提供商。
+- `control.json` 中的客户端 token 不应进入 Git 或截图。
 
 ## 目录职责
 
 ```text
-purpose.md        方向、范围与关键问题
-AGENTS.md          给 Codex/其他 LLM 的维护规则
-raw/sources/       不可变原始资料
-raw/inbox/         在 Obsidian 中新增、拖入、修改资料的收件箱
-wiki/index.md      内容导航，检索与 LLM 都先读它
-wiki/log.md        追加式操作历史
-wiki/sources/      每份原始资料的摘要与出处
-wiki/concepts/     跨来源概念沉淀
-wiki/entities/     人、组织、产品等实体沉淀
-wiki/queries/      已保存的问答与分析
-wiki/reviews.md    待人工确认的问题
-wiki/synthesis/    跨资料专题、比较与待研究问题
-.llm-wiki/queue.json  持久导入队列（运行时文件）
-.llm-wiki/state.json  归档资料与派生摘要的登记表（运行时文件）
-.llm-wiki/reviews.json 审核项状态（运行时文件）
-.llm-wiki/analyses/  两阶段模型分析快照（运行时文件）
-.llm-wiki/drafts/    候选页面、Diff 基线与应用回滚信息（运行时文件）
-.llm-wiki/search.db  SQLite FTS5 搜索索引（运行时文件）
-tools/wiki.py      本地导入、搜索、问答和健康检查工具
+purpose.md              知识库方向与长期问题
+AGENTS.md               Agent 维护边界和验证要求
+config.toml.example     模型配置模板（复制为 config.toml）
+llm_wiki/               业务包：分块、采集、API、图谱、MCP
+tools/wiki.py           CLI 与服务入口
+web/                    控制中心静态前端
+clients/obsidian-llm-wiki/  Obsidian 薄插件源码
+raw/inbox/              用户可编辑收件箱（Git 忽略内容）
+raw/sources/            不可变原始资料
+wiki/                   结构化 Wiki 页面
+.llm-wiki/              工具运行时状态（Git 忽略）
+tests/                  自动化测试（59+）
+docs/                   设计、技术说明、验收与路线图
 ```
 
-`.llm-wiki/` 下的状态、队列、审核、分析、草稿和索引由工具维护，不应手工编辑或作为知识正文写入 Obsidian。项目的 `.gitignore` 已为这些运行时文件预置排除规则；当前目录尚未初始化为 Git 仓库。`wiki/reviews.md` 是方便在 Obsidian 阅读的事实核验与补充队列镜像，状态以 `.llm-wiki/reviews.json` 为准；旧版没有原文引句的记录会自动迁移为 `legacy_unanchored`，保留在待补充队列。`purpose.md` 目前是范围模板；在明确资料范围和长期问题前，不应把其中的占位文字当作知识库既定目标。
-
-## 工作方式
-
-1. 把资料写入或拖入 `raw/inbox/`，由控制中心或 `watch` 的持久队列归档；处理失败时查看 `status`。
-2. 审阅 `draft` 中的文件 Diff 后应用或丢弃；这不等于确认资料中的事实。
-3. 用 `review list --queue facts` 核验有原文引句的断言，用 `review list --queue research` 整理待补充事项；再用 `synthesize` 形成跨资料专题，用 `search` 和 `ask` 查询带依据的结论。
-4. 先把不再需要的资料移入 `trash`，确认永久删除时才使用 `remove --yes`；定期运行 `lint`，必要时运行 `rebuild`。
-
-原始资料始终是事实依据；Wiki 是可重建的“编译产物”。不确定与冲突应留在 `wiki/reviews.md`，而不是被模型静默覆盖。
+`.llm-wiki/` 运行时文件不能手工编辑。`wiki/reviews.md` 以 `.llm-wiki/reviews.json` 为准。
 
 ## 项目文档
 
-- [术语与状态模型](docs/CONTEXT.md)
-- [测试说明](docs/TESTING.md)
+- [知识库目标](purpose.md)
+- [术语、状态与设计边界](docs/CONTEXT.md)
+- [采集、交互与知识图谱设计](docs/INTERACTION_AND_GRAPH_DESIGN.md)
+- [技术说明](docs/TECHNICAL.md)
+- [全流程验收测试](docs/ACCEPTANCE.md)
+- [Obsidian 集成决策记录](docs/obsidian.md)
 - [后续路线图](docs/ROADMAP.md)
+- [测试说明](docs/TESTING.md)

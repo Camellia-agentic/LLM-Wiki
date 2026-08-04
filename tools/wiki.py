@@ -32,6 +32,19 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import Request, urlopen
 
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from llm_wiki.control import ControlState, InstanceLock
+from llm_wiki.pipeline import analyze_content_in_chunks
+from llm_wiki.server import api_error_response, handle_v1_get, handle_v1_post
+from llm_wiki.repository import Repository
+from llm_wiki.jobs import AcquisitionStore, JobRunner
+from llm_wiki.text import PAGE_TYPES
+from llm_wiki.errors import ApiError
+from llm_wiki.relations import merge_relations_into_content, topic_relations_from_analysis
+
 
 SOURCE_EXTENSIONS = {".md", ".markdown", ".txt"}
 WIKI_DIRECTORIES = ("sources", "concepts", "entities", "queries", "synthesis")
@@ -355,7 +368,7 @@ class Wiki:
         return ["\n".join(block) for block in blocks]
 
     def preserve_human_content(self, existing: str, generated: str) -> str:
-        unknown = self.extract_unknown_frontmatter(existing, {"title", "type", "sources", "updated"})
+        unknown = self.extract_unknown_frontmatter(existing, {"title", "type", "sources", "updated", "relations"})
         if unknown:
             generated = generated.replace("\n---\n", "\n" + "\n".join(unknown) + "\n---\n", 1)
         manual = re.search(r"(?ms)^## 人工补充\s*$.*?(?=^## |\Z)", strip_frontmatter(existing))
@@ -366,7 +379,16 @@ class Wiki:
     def topic_path(self, kind: str, name: str) -> Path:
         return self.wiki / kind / f"{slug(name)}.md"
 
-    def render_topic_page(self, kind: str, item: object, source_path: str, source_title: str, existing: str = "") -> tuple[Path, str, str] | None:
+    def render_topic_page(
+        self,
+        kind: str,
+        item: object,
+        source_path: str,
+        source_title: str,
+        existing: str = "",
+        *,
+        page_relations: list[dict] | None = None,
+    ) -> tuple[Path, str, str] | None:
         if isinstance(item, str):
             name, summary = item.strip(), ""
         elif isinstance(item, dict):
@@ -379,15 +401,20 @@ class Wiki:
         path = self.topic_path(kind, name)
         if not existing:
             heading = "概念" if kind == "concepts" else "实体"
-            content = frontmatter(name, kind[:-1], [source_path]) + f"# {name}\n\n## {heading}说明\n\n{summary or '待后续资料补充。'}\n"
+            page_type = PAGE_TYPES.get(kind, kind.rstrip("s"))
+            content = frontmatter(name, page_type, [source_path]) + f"# {name}\n\n## {heading}说明\n\n{summary or '待后续资料补充。'}\n"
+        else:
+            existing_sources = self.frontmatter_sources(existing)
+            content = existing
+            if source_path not in existing_sources:
+                content = self.set_frontmatter_sources(content, [*existing_sources, source_path])
+            section = f"\n## {today()} · {source_title}\n\n{summary or '此资料提及该主题。'}\n\n来源：[{source_path}](../../{source_path})\n"
+            if source_path not in content:
+                content = content.rstrip() + section
+        if page_relations:
+            content = merge_relations_into_content(content, page_relations)
+        if not existing:
             return path, content, name
-        existing_sources = self.frontmatter_sources(existing)
-        content = existing
-        if source_path not in existing_sources:
-            content = self.set_frontmatter_sources(content, [*existing_sources, source_path])
-        section = f"\n## {today()} · {source_title}\n\n{summary or '此资料提及该主题。'}\n\n来源：[{source_path}](../../{source_path})\n"
-        if source_path not in content:
-            content = content.rstrip() + section
         return path, content, name
 
     def duplicate_candidates(self, kind: str, name: str, target: Path) -> list[dict]:
@@ -413,6 +440,11 @@ class Wiki:
         planned: dict[str, str] = {}
         related: list[str] = []
         duplicates: list[dict] = []
+        analysis_relations = analysis.get("relations", []) if isinstance(analysis.get("relations"), list) else []
+
+        def wiki_exists(relative: str) -> bool:
+            return (self.wiki / f"{relative}.md").is_file()
+
         for kind, key in (("concepts", "concepts"), ("entities", "entities")):
             values = analysis.get(key, []) if isinstance(analysis.get(key), list) else []
             for item in values:
@@ -421,7 +453,22 @@ class Wiki:
                 existing = planned.get(self.relative_wiki_path(candidate_path)) if candidate_path else ""
                 if candidate_path and not existing and candidate_path.is_file():
                     existing = read_text(candidate_path)
-                rendered = self.render_topic_page(kind, item, raw_path, title, existing)
+                planned_paths = {path.removesuffix(".md") for path in planned}
+                page_relations = topic_relations_from_analysis(
+                    analysis_relations,
+                    subject=name,
+                    source_path=raw_path,
+                    planned_paths=planned_paths,
+                    wiki_exists=wiki_exists,
+                )
+                rendered = self.render_topic_page(
+                    kind,
+                    item,
+                    raw_path,
+                    title,
+                    existing,
+                    page_relations=page_relations or None,
+                )
                 if not rendered:
                     continue
                 path, page, topic_name = rendered
@@ -732,9 +779,24 @@ class Wiki:
             headers["Authorization"] = f"Bearer {args.api_key}"
 
         def complete(body: dict) -> dict:
-            request = Request(args.llm_url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
-            with urlopen(request, timeout=args.timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
+            retryable = {429, 502, 503}
+            last_error: HTTPError | None = None
+            for attempt in range(4):
+                try:
+                    request = Request(args.llm_url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+                    with urlopen(request, timeout=args.timeout) as response:
+                        return json.loads(response.read().decode("utf-8"))
+                except HTTPError as error:
+                    if error.code in retryable and attempt < 3:
+                        delay = min(2 ** attempt, 16)
+                        print(f"  模型服务繁忙（HTTP {error.code}），{delay}s 后重试…", file=sys.stderr)
+                        time.sleep(delay)
+                        last_error = error
+                        continue
+                    raise
+            if last_error:
+                raise last_error
+            raise RuntimeError("模型请求失败。")
 
         try:
             response_data = complete(payload)
@@ -755,24 +817,7 @@ class Wiki:
     def llm_analysis(self, title: str, raw_path: str, content: str, args: argparse.Namespace) -> dict:
         if not args.llm_url or not args.model:
             return {}
-        index = read_text(self.wiki / "index.md") if (self.wiki / "index.md").exists() else ""
-        purpose = read_text(self.root / "purpose.md") if (self.root / "purpose.md").exists() else ""
-        system = (
-            "You are stage 1 of a Chinese knowledge-wiki ingest pipeline. Return only a JSON object. "
-            "Extract evidence-backed facts, concepts, entities, contradictions, and gaps. Never invent facts. "
-            "Schema: {summary:string, claims:[string], concepts:[{name:string,summary:string}], "
-            "entities:[{name:string,summary:string}], links:[string], "
-            "review_items:[{kind:'source_claim'|'gap'|'research_question',text:string,evidence_quote:string,evidence_anchor:string,confidence:string}]}. "
-            "A source_claim is a concrete claim in the supplied source that needs human verification. It MUST include an exact, contiguous "
-            "verbatim evidence_quote copied from the source text; never paraphrase it and never create a source_claim without it. "
-            "Use gap for missing material and research_question for questions needing external or cross-source research; both must have empty "
-            "evidence_quote and evidence_anchor. Do not turn requests for more information into source_claims."
-        )
-        user = (
-            f"Purpose:\n{purpose[:3000]}\n\nCurrent index:\n{index[:5000]}\n\n"
-            f"Immutable source: {raw_path}\nTitle: {title}\n\nSource text:\n{content[:14000]}"
-        )
-        return self.llm_json(system, user, args, "第一阶段分析")
+        return analyze_content_in_chunks(self, title, raw_path, content, args, self.llm_json)
 
     def llm_generation(self, title: str, raw_path: str, analysis: dict, args: argparse.Namespace) -> dict:
         system = (
@@ -1557,44 +1602,64 @@ def watch_inbox(wiki: Wiki, path: Path, args: argparse.Namespace) -> int:
         time.sleep(args.interval)
 
 
-CONTROL_CENTER_TEMPLATE = r"""<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="llm-wiki-token" content="__TOKEN__">
-<title>LLM Wiki</title><style>
-:root{--ink:#18212b;--muted:#61707d;--line:#d9e0e5;--paper:#f7f9fa;--panel:#fff;--blue:#1769aa;--teal:#087c70;--amber:#9a6200;--red:#b42318;--green:#277a3f}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.5 "Segoe UI",Arial,sans-serif}header{background:#fff;border-bottom:1px solid var(--line);padding:14px 24px;display:flex;align-items:center;gap:20px;position:sticky;top:0;z-index:2}h1{font-size:18px;margin:0;letter-spacing:0}nav{display:flex;gap:4px;flex-wrap:wrap}button,input,select{font:inherit}button{border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:5px;padding:7px 10px;cursor:pointer}button:hover,button.active{border-color:var(--blue);color:var(--blue)}button.primary{background:var(--blue);border-color:var(--blue);color:#fff}button.danger{color:var(--red)}#notice{margin-left:auto;color:var(--muted);font-size:12px}main{max-width:1180px;margin:0 auto;padding:22px 24px 48px}.view{display:none}.view.active{display:block}.metrics{display:grid;grid-template-columns:repeat(6,minmax(120px,1fr));gap:10px;margin-bottom:20px}.metric{border:1px solid var(--line);background:var(--panel);padding:12px}.metric b{display:block;font-size:23px;line-height:1.1}.metric span{color:var(--muted);font-size:12px}section{border-top:1px solid var(--line);padding:16px 0}h2{font-size:16px;margin:0 0 12px}h3{font-size:14px;margin:0}.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}.drop{border:1px dashed #9cadba;background:#fff;padding:24px;text-align:center;color:var(--muted);min-height:86px;display:grid;place-items:center}.drop.drag{border-color:var(--blue);color:var(--blue)}.list{border:1px solid var(--line);background:#fff}.row{display:grid;grid-template-columns:minmax(180px,1fr) 120px 160px;gap:12px;align-items:center;padding:10px 12px;border-bottom:1px solid var(--line)}.row:last-child{border-bottom:0}.row .actions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}.muted{color:var(--muted)}.warn{color:var(--amber)}.bad{color:var(--red)}.good{color:var(--green)}.split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:22px}.search{display:flex;gap:8px}.search input,.search select{flex:1;border:1px solid var(--line);border-radius:5px;padding:8px 10px;background:#fff}.output{white-space:pre-wrap;background:#fff;border:1px solid var(--line);padding:12px;min-height:80px;margin:10px 0;overflow:auto}dialog{width:min(1000px,94vw);height:min(760px,90vh);border:1px solid var(--line);padding:0;border-radius:6px}dialog header{position:static;padding:12px 16px}dialog pre{white-space:pre-wrap;margin:0;padding:16px;font:12px/1.5 Consolas,monospace;overflow:auto;height:calc(100% - 56px)}.empty{padding:16px;color:var(--muted);background:#fff;border:1px solid var(--line)}@media(max-width:760px){header{padding:12px;align-items:flex-start;flex-wrap:wrap}#notice{margin-left:0}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}main{padding:16px}.split{grid-template-columns:1fr}.row{grid-template-columns:1fr}.row .actions{justify-content:flex-start}}
-</style></head><body><header><h1>LLM Wiki</h1><nav><button data-view="home" class="active">工作台</button><button data-view="drafts">草稿</button><button data-view="query">检索问答</button><button data-view="reviews">事实审核</button><button data-view="research">待补充</button><button data-view="trash">回收站</button></nav><span id="notice">本机服务</span></header><main>
-<div id="home" class="view active"><div id="metrics" class="metrics"></div><section><h2>收件箱</h2><div id="drop" class="drop"><input id="file" type="file" accept=".md,.markdown,.txt" multiple hidden><button id="choose" class="primary">选择资料</button></div></section><section><h2>处理状态</h2><div id="inbox" class="list"></div></section></div>
-<div id="drafts" class="view"><section><h2>待确认草稿</h2><div id="draft-list" class="list"></div></section></div>
-<div id="query" class="view"><div class="split"><section><h2>检索</h2><div class="search"><input id="search-q" placeholder="搜索知识库"><button id="search-go">检索</button></div><pre id="search-out" class="output"></pre></section><section><h2>问答</h2><div class="search"><input id="ask-q" placeholder="基于已沉淀页面提问"><button id="ask-go" class="primary">提问</button></div><pre id="ask-out" class="output"></pre></section></div></div>
-<div id="reviews" class="view"><section><h2>待核实事实</h2><div id="review-list" class="list"></div></section></div>
-<div id="research" class="view"><section><h2>待补充</h2><div id="research-list" class="list"></div></section></div>
-<div id="trash" class="view"><section><h2>资料管理</h2><form class="search" method="post" action="/action/trash"><input type="hidden" name="token" value="__TOKEN__"><select name="target">__SOURCES__</select><button class="danger">移入回收站</button></form></section><section><h2>已移入回收站的资料</h2><div id="trash-list" class="list"></div></section></div>
-</main><dialog id="diff"><header><h3 id="diff-title">草稿差异</h3><button id="close-diff">关闭</button></header><pre id="diff-out"></pre></dialog>
-<script>const token="__TOKEN__";const $=s=>document.querySelector(s);const esc=v=>String(v??"");async function api(path,opt={}){opt.headers={...(opt.headers||{}),"X-LLM-Wiki-Token":token};const r=await fetch(path,opt);const d=await r.json();if(!r.ok)throw Error(d.error||"请求失败");return d}function notice(t,bad=false){const n=$("#notice");n.textContent=t;n.className=bad?"bad":""}function row(parts,actions=[]){const e=document.createElement("div");e.className="row";parts.forEach((p,i)=>{const d=document.createElement("div");d.textContent=esc(p);if(i>0)d.className="muted";e.append(d)});const a=document.createElement("div");a.className="actions";actions.forEach(x=>{const b=document.createElement("button");b.textContent=x.label;b.className=x.cls||"";b.onclick=x.run;a.append(b)});e.append(a);return e}function empty(t){const e=document.createElement("div");e.className="empty";e.textContent=t;return e}async function refresh(){try{const s=await api("/api/status");const values=[[s.inbox.length,"收件箱"],[s.queue.pending+s.queue.failed,"队列"],[s.drafts.draft,"待确认草稿"],[s.reviews.open,"事实审核"],[s.reviews.research_open,"待补充"],[s.health.broken_links+s.health.missing_sources,"健康问题"]];const metrics=$("#metrics");metrics.replaceChildren(...values.map(v=>{const d=document.createElement("div");d.className="metric";d.innerHTML=`<b>${v[0]}</b><span>${v[1]}</span>`;return d}));const inbox=$("#inbox");inbox.replaceChildren(...(s.inbox.length?s.inbox.map(i=>row([i.name,`${i.size} B`,i.modified_at])):[empty("暂无资料")]));await Promise.all([drafts(),reviews(),trash()]);notice(s.model_ready?"模型已连接":"未配置模型")}catch(e){notice(e.message,true)}}async function drafts(){const d=await api("/api/drafts");const list=$("#draft-list");list.replaceChildren(...(d.length?d.map(x=>row([x.title,`新增 ${x.summary.created} / 修改 ${x.summary.modified}`,x.created_at],[{label:"查看差异",run:()=>showDraft(x.id)},{label:"应用",cls:"primary",run:()=>applyDraft(x.id)},{label:"丢弃",cls:"danger",run:()=>discardDraft(x.id)}])):[empty("暂无待确认草稿")]));}async function showDraft(id){const d=await api(`/api/drafts/${encodeURIComponent(id)}`);$("#diff-title").textContent=`${d.title} · ${id}`;$("#diff-out").textContent=d.diffs.map(x=>x.diff||`${x.operation} ${x.path}`).join("\n\n")||"无文本差异";$("#diff").showModal()}async function applyDraft(id){if(!confirm("应用该草稿？"))return;try{await api(`/api/drafts/${encodeURIComponent(id)}/accept`,{method:"POST"});await refresh()}catch(e){notice(e.message,true)}}async function discardDraft(id){if(!confirm("丢弃该草稿？"))return;try{await api(`/api/drafts/${encodeURIComponent(id)}/discard`,{method:"POST"});await refresh()}catch(e){notice(e.message,true)}}async function reviews(){const d=await api("/api/reviews");const list=$("#review-list");list.replaceChildren(...(d.length?d.map(x=>row([x.text,x.title,x.raw_path],[{label:"已核实",cls:"primary",run:()=>setReview(x.id,"resolved")}])):[empty("暂无待核实事实")]));}async function setReview(id,status){try{await api(`/api/reviews/${encodeURIComponent(id)}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({status})});await refresh()}catch(e){notice(e.message,true)}}async function trash(){const d=await api("/api/trash");const list=$("#trash-list");list.replaceChildren(...(d.length?d.map(x=>row([x.title,x.raw_path,x.trashed_at],[{label:"恢复",cls:"primary",run:()=>restore(x.digest)}])):[empty("回收站为空")]));}async function restore(id){try{await api(`/api/trash/${encodeURIComponent(id)}/restore`,{method:"POST"});await refresh()}catch(e){notice(e.message,true)}}async function upload(files){for(const f of files){try{await api("/api/inbox",{method:"POST",headers:{"X-Filename":encodeURIComponent(f.name),"Content-Type":"application/octet-stream"},body:f});notice(`已放入收件箱：${f.name}`)}catch(e){notice(e.message,true)}}await refresh()}async function search(){try{const q=$("#search-q").value.trim();const d=await api(`/api/search?q=${encodeURIComponent(q)}`);$("#search-out").textContent=d.map(x=>`${x.path}\n${x.excerpt}`).join("\n\n")||"没有命中"}catch(e){notice(e.message,true)}}async function ask(){try{const q=$("#ask-q").value.trim();if(!q)return;$("#ask-out").textContent="";const d=await api("/api/ask",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({question:q})});$("#ask-out").textContent=d.answer}catch(e){notice(e.message,true)}}document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{document.querySelectorAll("nav button").forEach(x=>x.classList.remove("active"));document.querySelectorAll(".view").forEach(x=>x.classList.remove("active"));b.classList.add("active");$("#"+b.dataset.view).classList.add("active")});$("#choose").onclick=()=>$("#file").click();$("#file").onchange=e=>upload(e.target.files);const drop=$("#drop");drop.ondragover=e=>{e.preventDefault();drop.classList.add("drag")};drop.ondragleave=()=>drop.classList.remove("drag");drop.ondrop=e=>{e.preventDefault();drop.classList.remove("drag");upload(e.dataTransfer.files)};$("#search-go").onclick=search;$("#ask-go").onclick=ask;$("#close-diff").onclick=()=>$("#diff").close();setInterval(refresh,5000);refresh();</script></body></html>"""
+WEB_ROOT = _ROOT / "web"
+
+STATIC_CONTENT_TYPES = {
+    ".js": "application/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".html": "text/html; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+}
 
 
-CONTROL_REVIEW_EXTENSION = r"""
-<dialog id="review-detail"><header><h3 id="review-detail-title">核实资料</h3><button id="close-review-detail">关闭</button></header><div style="padding:16px;display:grid;gap:12px"><div id="review-question" class="output"></div><div id="review-anchor" class="output" hidden></div><div class="toolbar"><a id="open-evidence" target="_blank">在 Obsidian 打开原始资料</a><a id="open-wiki-page" target="_blank">在 Obsidian 打开 Wiki 页</a></div><div class="split"><section><h3>原始资料</h3><pre id="review-evidence" class="output"></pre></section><section><h3>当前 Wiki 页面</h3><pre id="review-wiki-page" class="output"></pre></section></div><textarea id="review-note" rows="4" placeholder="核实依据、结论或后续动作"></textarea><div class="toolbar"><button id="resolve-review" class="primary">保存并标记已处理</button></div></div></dialog>
-<script>
-const reviewToken=document.querySelector('meta[name="llm-wiki-token"]').content;
-const reviewHeaders={"X-LLM-Wiki-Token":reviewToken};
-let activeReviewId="";
-async function reviewRequest(path,options={}){options.headers={...reviewHeaders,...(options.headers||{})};const response=await fetch(path,options);const data=await response.json();if(!response.ok)throw Error(data.error||"请求失败");return data;}
-function obsidianLink(path){return path?`obsidian://open?path=${encodeURIComponent(path)}`:"#";}
-async function openReviewDetail(id){try{const detail=await reviewRequest(`/api/reviews/${encodeURIComponent(id)}`);activeReviewId=id;document.querySelector('#review-detail-title').textContent=detail.review.title;document.querySelector('#review-question').textContent=detail.review.text;const anchor=document.querySelector('#review-anchor');const quote=detail.evidence.quote||'';anchor.hidden=false;anchor.textContent=quote?`原文证据（${detail.evidence.anchor||'已定位'}）\n${quote}`:'此项属于待补充，尚无可核实的原文引句。';document.querySelector('#review-evidence').textContent=detail.evidence.content;document.querySelector('#review-wiki-page').textContent=detail.wiki_page.content;document.querySelector('#review-note').value=detail.review.resolution_note||'';for(const [selector,path] of [['#open-evidence',detail.evidence.absolute_path],['#open-wiki-page',detail.wiki_page.absolute_path]]){const link=document.querySelector(selector);link.href=obsidianLink(path);link.hidden=!path;}document.querySelector('#review-detail').showModal();}catch(error){document.querySelector('#notice').textContent=error.message;}}
-function renderReviewQueue(listId,items,emptyText){const list=document.querySelector('#'+listId);list.replaceChildren(...(items.length?items.map(item=>row([item.text,item.title,item.evidence_anchor||item.kind],[{label:'查看正文',run:()=>openReviewDetail(item.id)}])):[empty(emptyText)]));}
-reviews=async()=>{const [facts,research]=await Promise.all([reviewRequest('/api/reviews?queue=facts'),reviewRequest('/api/reviews?queue=research')]);renderReviewQueue('review-list',facts,'暂无待核实事实');renderReviewQueue('research-list',research,'暂无待补充事项。');};
-document.querySelector('#close-review-detail').onclick=()=>document.querySelector('#review-detail').close();
-document.querySelector('#resolve-review').onclick=async()=>{if(!activeReviewId)return;try{await reviewRequest(`/api/reviews/${encodeURIComponent(activeReviewId)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status:'resolved',resolution_note:document.querySelector('#review-note').value})});document.querySelector('#review-detail').close();location.reload();}catch(error){document.querySelector('#notice').textContent=error.message;}};
-reviews();
-</script>
-"""
+def render_control_index(control: "LocalControl") -> bytes:
+    index_path = WEB_ROOT / "index.html"
+    if not index_path.is_file():
+        raise FileNotFoundError(f"缺少控制中心页面：{index_path}")
+    with control.lock:
+        sources = [item for item in control.wiki.status_summary()["sources"] if item.get("status") != "trashed"]
+    options = "".join(
+        f'<option value="{html.escape(str(item["raw_path"]), quote=True)}">{html.escape(str(item["title"]))}</option>'
+        for item in sources
+    )
+    page = read_text(index_path).replace("__TOKEN__", control.token).replace(
+        "__SOURCES__", options or '<option value="">暂无可移入资料</option>'
+    )
+    return page.encode("utf-8")
+
+
+def serve_web_static(rel_path: str) -> tuple[str, bytes] | None:
+    """Return (content_type, body) for a file under web/, or None if not found."""
+    rel = Path(unquote(rel_path))
+    if rel.is_absolute() or ".." in rel.parts:
+        return None
+    web_root = WEB_ROOT.resolve()
+    target = (WEB_ROOT / rel).resolve()
+    if web_root not in target.parents and target != web_root:
+        return None
+    if not target.is_file():
+        return None
+    suffix = target.suffix.lower()
+    content_type = STATIC_CONTENT_TYPES.get(suffix, "application/octet-stream")
+    return content_type, target.read_bytes()
 
 
 class LocalControl:
     def __init__(self, wiki: Wiki, args: argparse.Namespace):
         self.wiki = wiki
         self.args = args
-        self.token = secrets.token_urlsafe(24)
+        self.instance_lock = InstanceLock(wiki.root)
+        self.instance_lock.acquire()
+        self.control_state = ControlState.load_or_create(wiki.root, args.port)
+        self.token = self.control_state.token
+        self.repository = Repository(wiki.root)
+        wiki.repository = self.repository
+        self.job_store = AcquisitionStore(self.repository)
+        self.job_runner = JobRunner(wiki, args, self.job_store)
+        self.job_runner.start()
         self.lock = threading.RLock()
         self.stop_event = threading.Event()
         self.observed: dict[Path, tuple[tuple[int, int], float, bool]] = {}
@@ -1633,7 +1698,58 @@ def make_control_handler(control: LocalControl) -> type[BaseHTTPRequestHandler]:
             self.wfile.write(body)
 
         def send_error_json(self, status: int, error: str) -> None:
-            self.send_json(status, {"error": error})
+            payload = {"error": error}
+            if status == HTTPStatus.FORBIDDEN:
+                payload = ApiError("unauthorised", error, retryable=False).to_dict()
+            self.send_json(status, payload)
+
+        def dispatch_v1_post(self, parsed, body: bytes) -> bool:
+            try:
+                header_map = {key: value for key, value in self.headers.items()}
+                result = handle_v1_post(
+                    parsed.path,
+                    body,
+                    header_map,
+                    control.wiki,
+                    control.args,
+                    control.control_state,
+                    control.job_runner,
+                )
+            except ApiError as error:
+                status, payload = api_error_response(error)
+                self.send_json(status, payload)
+                return True
+            if result is None:
+                return False
+            status, payload = result
+            self.send_json(status, payload)
+            return True
+
+        def read_body(self) -> bytes:
+            size = int(self.headers.get("Content-Length", "0"))
+            if size > 20 * 1024 * 1024:
+                raise ValueError("请求过大。")
+            return self.rfile.read(size) if size > 0 else b""
+
+        def dispatch_v1_get(self, parsed) -> bool:
+            try:
+                result = handle_v1_get(
+                    parsed.path,
+                    parsed.query,
+                    control.wiki,
+                    control.args,
+                    control.control_state,
+                    authorised=self.authorised() if parsed.path != "/api/capabilities" else True,
+                )
+            except ApiError as error:
+                status, payload = api_error_response(error)
+                self.send_json(status, payload)
+                return True
+            if result is None:
+                return False
+            status, payload = result
+            self.send_json(status, payload)
+            return True
 
         def read_json(self) -> dict:
             size = int(self.headers.get("Content-Length", "0"))
@@ -1650,12 +1766,23 @@ def make_control_handler(control: LocalControl) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             try:
+                if self.dispatch_v1_get(parsed):
+                    return
+                if parsed.path.startswith("/static/"):
+                    static = serve_web_static(parsed.path.removeprefix("/static/"))
+                    if static is None:
+                        self.send_error_json(404, "未找到资源。")
+                        return
+                    content_type, body = static
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 if parsed.path == "/":
-                    with control.lock:
-                        sources = [item for item in control.wiki.status_summary()["sources"] if item.get("status") != "trashed"]
-                    options = "".join(f'<option value="{html.escape(str(item["raw_path"]), quote=True)}">{html.escape(str(item["title"]))}</option>' for item in sources)
-                    page = CONTROL_CENTER_TEMPLATE.replace("__TOKEN__", control.token).replace("__SOURCES__", options or '<option value="">暂无可移入资料</option>')
-                    body = page.replace("</body>", CONTROL_REVIEW_EXTENSION + "</body>").encode("utf-8")
+                    body = render_control_index(control)
                     self.send_response(HTTPStatus.OK)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.send_header("Content-Length", str(len(body)))
@@ -1706,6 +1833,13 @@ def make_control_handler(control: LocalControl) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
             try:
+                if parsed.path.startswith("/api/v1/"):
+                    if not self.authorised():
+                        self.send_error_json(403, "请求令牌无效。")
+                        return
+                    with control.lock:
+                        if self.dispatch_v1_post(parsed, self.read_body()):
+                            return
                 if parsed.path == "/action/trash":
                     size = int(self.headers.get("Content-Length", "0"))
                     form = parse_qs(self.rfile.read(size).decode("utf-8"))
@@ -1808,6 +1942,8 @@ def serve_control_center(wiki: Wiki, args: argparse.Namespace) -> int:
         print("\n本地控制中心已停止。")
     finally:
         control.stop_event.set()
+        control.job_runner.stop()
+        control.instance_lock.release()
         server.server_close()
     return 0
 
@@ -1923,6 +2059,10 @@ def parse_args() -> argparse.Namespace:
     common_llm_options(serve)
     subcommands.add_parser("rebuild", help="重建 Wiki 导航、概览和搜索索引")
     subcommands.add_parser("lint", help="检查 Wiki 链接、孤儿页和来源")
+    mcp = subcommands.add_parser("mcp", help="启动薄 MCP 服务（只读转发 loopback API）")
+    mcp.add_argument("--http", action="store_true", help="使用 loopback HTTP 而非 stdin/stdout")
+    mcp.add_argument("--host", default="127.0.0.1", choices=("127.0.0.1", "localhost"))
+    mcp.add_argument("--port", type=int, default=8766, help="HTTP 模式端口，默认 8766")
     return parser.parse_args()
 
 
@@ -1930,6 +2070,9 @@ def main() -> int:
     args = parse_args()
     wiki = Wiki(args.root)
     wiki.ensure_layout()
+    from llm_wiki.config import apply_config_to_args
+
+    apply_config_to_args(args, wiki.root)
     if args.command == "ingest":
         path = args.path.resolve()
         if not path.exists():
@@ -2124,6 +2267,16 @@ def main() -> int:
         wiki.rebuild_derived()
         print("已重建 Wiki 导航、概览和搜索索引。")
         return 0
+    if args.command == "mcp":
+        from llm_wiki.mcp_server import run_http, run_stdio
+
+        if args.port <= 0 or args.port > 65535:
+            print("mcp 端口无效。", file=sys.stderr)
+            return 2
+        if args.http:
+            print(f"LLM Wiki MCP HTTP 监听 {args.host}:{args.port}", file=sys.stderr)
+            return run_http(wiki.root, args.host, args.port)
+        return run_stdio(wiki.root)
     broken, orphans, missing_sources = wiki.lint()
     print(f"断链：{len(broken)}")
     for item in broken:

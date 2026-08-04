@@ -365,6 +365,8 @@ class WikiToolTests(unittest.TestCase):
                 max_tokens=200,
                 auto_accept=False,
                 no_watch=True,
+                host="127.0.0.1",
+                port=8765,
             )
             control = wiki_tool.LocalControl(wiki, args)
             server = wiki_tool.ThreadingHTTPServer(("127.0.0.1", 0), wiki_tool.make_control_handler(control))
@@ -408,11 +410,15 @@ class WikiToolTests(unittest.TestCase):
                 with urlopen(address + "/", timeout=3) as response:
                     page = response.read().decode("utf-8")
                 self.assertIn("LLM Wiki", page)
-                self.assertIn(r'join("\n\n")', page)
-                self.assertIn("查看正文", page)
+                self.assertIn('src="/static/app.js"', page)
+                self.assertIn('meta name="llm-wiki-token"', page)
+                self.assertIn("review-dialog", page)
+                with urlopen(address + "/static/app.js", timeout=3) as response:
+                    self.assertEqual(200, response.status)
             finally:
                 server.shutdown()
                 server.server_close()
+                control.instance_lock.release()
                 thread.join(timeout=3)
 
     def test_rebuild_index_does_not_truncate_wikilinks(self) -> None:

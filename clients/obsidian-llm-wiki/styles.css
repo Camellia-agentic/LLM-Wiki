@@ -1,0 +1,50 @@
+.llm-wiki-muted {
+  color: var(--text-muted);
+  font-size: 0.9em;
+}
+
+.llm-wiki-error {
+  color: var(--text-error);
+}
+
+.llm-wiki-sidebar h3 {
+  margin-top: 0;
+  font-size: 1em;
+  word-break: break-word;
+}
+
+.llm-wiki-section {
+  margin-bottom: 0.75em;
+}
+
+.llm-wiki-section h4 {
+  margin: 0.25em 0;
+  font-size: 0.85em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.llm-wiki-section ul {
+  margin: 0;
+  padding-left: 1.2em;
+  font-size: 0.9em;
+}
+
+.llm-wiki-actions {
+  display: flex;
+  gap: 0.5em;
+  margin-top: 0.75em;
+}
+
+.llm-wiki-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5em;
+  margin-top: 1em;
+}
+
+.llm-wiki-input,
+.llm-wiki-textarea {
+  margin-bottom: 0.5em;
+  display: block;
+}

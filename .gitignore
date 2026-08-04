@@ -1,5 +1,22 @@
+# Python
 __pycache__/
 *.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg-info/
+.venv/
+venv/
+
+# 本地密钥与配置（使用 config.toml.example 作模板）
+config.toml
+.env
+.env.*
+!.env.example
+
+# LLM Wiki 运行时状态（工具维护，勿手工编辑）
 .llm-wiki/state.json
 .llm-wiki/*.jsonl
 .llm-wiki/analyses/
@@ -8,3 +25,32 @@ __pycache__/
 .llm-wiki/reviews.json
 .llm-wiki/search.db*
 .llm-wiki/watcher*.log
+.llm-wiki/control.json
+.llm-wiki/instance.lock
+
+# 收件箱：用户待导入的临时笔记（归档后进入 raw/sources/）
+raw/inbox/*
+!raw/inbox/.gitkeep
+
+# Obsidian 个人工作区状态（库设置可提交）
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/graph.json
+
+# 其他本地工具/编辑器
+.stonework/
+.cursor/
+.vscode/
+.idea/
+*.swp
+*~
+
+# Obsidian 插件构建产物
+clients/obsidian-llm-wiki/node_modules/
+clients/obsidian-llm-wiki/main.js
+clients/obsidian-llm-wiki/main.js.map
+
+# 操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
